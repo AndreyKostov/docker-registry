@@ -31,7 +31,7 @@ func init() {
 // s3DriverFactory implements the factory.StorageDriverFactory interface
 type s3DriverFactory struct{}
 
-func (factory *s3DriverFactory) Create(parameters map[string]string) (storagedriver.StorageDriver, error) {
+func (factory *s3DriverFactory) Create(parameters map[string]interface{}) (storagedriver.StorageDriver, error) {
 	return FromParameters(parameters)
 }
 
@@ -50,28 +50,28 @@ type Driver struct {
 // - region
 // - bucket
 // - encrypt
-func FromParameters(parameters map[string]string) (*Driver, error) {
+func FromParameters(parameters map[string]interface{}) (*Driver, error) {
 	accessKey, ok := parameters["accesskey"]
-	if !ok || accessKey == "" {
+	if !ok || fmt.Sprint(accessKey) == "" {
 		return nil, fmt.Errorf("No accesskey parameter provided")
 	}
 
 	secretKey, ok := parameters["secretkey"]
-	if !ok || secretKey == "" {
+	if !ok || fmt.Sprint(secretKey) == "" {
 		return nil, fmt.Errorf("No secretkey parameter provided")
 	}
 
 	regionName, ok := parameters["region"]
-	if !ok || regionName == "" {
+	if !ok || fmt.Sprint(regionName) == "" {
 		return nil, fmt.Errorf("No region parameter provided")
 	}
-	region := aws.GetRegion(regionName)
+	region := aws.GetRegion(fmt.Sprint(regionName))
 	if region.Name == "" {
 		return nil, fmt.Errorf("Invalid region provided: %v", region)
 	}
 
 	bucket, ok := parameters["bucket"]
-	if !ok || bucket == "" {
+	if !ok || fmt.Sprint(bucket) == "" {
 		return nil, fmt.Errorf("No bucket parameter provided")
 	}
 
@@ -80,11 +80,11 @@ func FromParameters(parameters map[string]string) (*Driver, error) {
 		return nil, fmt.Errorf("No encrypt parameter provided")
 	}
 
-	encryptBool, err := strconv.ParseBool(encrypt)
+	encryptBool, err := strconv.ParseBool(fmt.Sprint(encrypt))
 	if err != nil {
 		return nil, fmt.Errorf("Unable to parse the encrypt parameter: %v", err)
 	}
-	return New(accessKey, secretKey, region, encryptBool, bucket)
+	return New(fmt.Sprint(accessKey), fmt.Sprint(secretKey), region, encryptBool, fmt.Sprint(bucket))
 }
 
 // New constructs a new Driver with the given AWS credentials, region, encryption flag, and
@@ -147,16 +147,6 @@ func (d *Driver) PutContent(path string, contents []byte) error {
 	return parseError(path, d.Bucket.Put(path, contents, d.getContentType(), getPermissions(), d.getOptions()))
 }
 
-type EmptyReadCloser struct{}
-
-func (rc EmptyReadCloser) Close() error {
-	return nil
-}
-
-func (rc EmptyReadCloser) Read(p []byte) (n int, err error) {
-	return bytes.NewReader([]byte{}).Read(p)
-}
-
 // ReadStream retrieves an io.ReadCloser for the content stored at "path" with a
 // given byte offset.
 func (d *Driver) ReadStream(path string, offset int64) (io.ReadCloser, error) {
@@ -175,10 +165,10 @@ func (d *Driver) ReadStream(path string, offset int64) (io.ReadCloser, error) {
 	resp, err := d.Bucket.GetResponseWithHeaders(path, headers)
 	if err != nil {
 		if s3Err, ok := err.(*s3.Error); ok && s3Err.Code == "InvalidRange" {
-			return EmptyReadCloser{}, nil
-		} else {
-			return nil, parseError(path, err)
+			return ioutil.NopCloser(bytes.NewReader(nil)), nil
 		}
+
+		return nil, parseError(path, err)
 	}
 	return resp.Body, nil
 }
@@ -253,14 +243,12 @@ func (d *Driver) WriteStream(path string, offset int64, reader io.Reader) (total
 
 			if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
 				return totalRead, err
-			} else {
-				part, err = multi.PutPart(int(partNumber), bytes.NewReader(buf[0:int64(bytesRead)+offset]))
-				if err != nil {
-					return totalRead, err
-				}
-
 			}
 
+			part, err = multi.PutPart(int(partNumber), bytes.NewReader(buf[0:int64(bytesRead)+offset]))
+			if err != nil {
+				return totalRead, err
+			}
 		} else {
 			fmt.Println("About to PutPartCopy")
 			// If the file that we already have is larger than 5MB, then we make it the first part
@@ -286,19 +274,19 @@ func (d *Driver) WriteStream(path string, offset int64, reader io.Reader) (total
 
 		if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
 			return totalRead, err
-		} else {
-			part, err := multi.PutPart(int(partNumber), bytes.NewReader(buf[0:bytesRead]))
-			if err != nil {
-				return totalRead, err
-			}
-			fmt.Println("Put part successfully")
+		}
 
-			parts = append(parts, part)
-			partNumber++
+		part, err := multi.PutPart(int(partNumber), bytes.NewReader(buf[0:bytesRead]))
+		if err != nil {
+			return totalRead, err
+		}
+		fmt.Println("Put part successfully")
 
-			if int64(bytesRead) < chunkSize {
-				break
-			}
+		parts = append(parts, part)
+		partNumber++
+
+		if int64(bytesRead) < chunkSize {
+			break
 		}
 	}
 
@@ -444,9 +432,9 @@ func (d *Driver) Delete(path string) error {
 func parseError(path string, err error) error {
 	if s3Err, ok := err.(*s3.Error); ok && s3Err.Code == "NoSuchKey" {
 		return storagedriver.PathNotFoundError{Path: "/" + path}
-	} else {
-		return err
 	}
+
+	return err
 }
 
 func hasCode(err error, code string) bool {
